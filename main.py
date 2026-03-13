@@ -16,8 +16,13 @@ import uuid
 # ─────────────────────────────────────────
 SECRET_KEY = os.getenv("SECRET_KEY", "changeme-secret-key-123")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")  # ID do produto no Stripe
 TRIAL_LIMIT = 3
+
+STRIPE_PRICES = {
+    "monthly":   os.getenv("STRIPE_PRICE_MONTHLY", "price_1TAcQ5RU38iMYmcGLUHDFIja"),
+    "quarterly": os.getenv("STRIPE_PRICE_QUARTERLY", "price_1TAcRMRU38iMYmcGUYaGPxdu"),
+    "yearly":    os.getenv("STRIPE_PRICE_YEARLY", "price_1TAcRVRU38iMYmcG6Hf6icuf"),
+}
 
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -35,6 +40,7 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     password_hash = Column(String)
     is_subscribed = Column(Boolean, default=False)
+    plan = Column(String, nullable=True)  # monthly, quarterly, yearly
     songs_used = Column(Integer, default=0)
     stripe_customer_id = Column(String, nullable=True)
     subscription_end = Column(DateTime, nullable=True)
@@ -91,6 +97,7 @@ class LoginRequest(BaseModel):
     password: str
 
 class CheckoutRequest(BaseModel):
+    plan: str  # monthly, quarterly, yearly
     success_url: str
     cancel_url: str
 
@@ -131,20 +138,23 @@ def get_license(user: User = Depends(get_current_user)):
     if user.is_subscribed:
         return {
             "status": "pro",
+            "plan": user.plan,
             "songs_used": user.songs_used,
             "songs_remaining": None,
+            "subscription_end": user.subscription_end.isoformat() if user.subscription_end else None,
         }
     else:
         remaining = max(0, TRIAL_LIMIT - user.songs_used)
         return {
             "status": "trial" if remaining > 0 else "expired",
+            "plan": "trial",
             "songs_used": user.songs_used,
             "songs_remaining": remaining,
+            "subscription_end": None,
         }
 
 @app.post("/use")
 def use_song(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Verifica se pode usar
     if not user.is_subscribed and user.songs_used >= TRIAL_LIMIT:
         raise HTTPException(status_code=403, detail="Trial expirado. Subscreve para continuar.")
 
@@ -159,7 +169,10 @@ def create_checkout(req: CheckoutRequest, user: User = Depends(get_current_user)
     if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=500, detail="Stripe não configurado")
 
-    # Cria ou reutiliza customer no Stripe
+    price_id = STRIPE_PRICES.get(req.plan)
+    if not price_id:
+        raise HTTPException(status_code=400, detail="Plano inválido. Use: monthly, quarterly ou yearly")
+
     db_user = db.query(User).filter(User.email == user.email).first()
     if not db_user.stripe_customer_id:
         customer = stripe.Customer.create(email=user.email)
@@ -169,29 +182,32 @@ def create_checkout(req: CheckoutRequest, user: User = Depends(get_current_user)
     session = stripe.checkout.Session.create(
         customer=db_user.stripe_customer_id,
         payment_method_types=["card"],
-        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+        line_items=[{"price": price_id, "quantity": 1}],
         mode="subscription",
         success_url=req.success_url,
         cancel_url=req.cancel_url,
+        metadata={"plan": req.plan, "email": user.email},
     )
 
-    return {"url": session.url}
+    return {"url": session.url, "plan": req.plan}
 
 @app.post("/webhook")
 async def stripe_webhook(request: dict):
-    # Aqui processamos eventos do Stripe (pagamento confirmado, cancelamento, etc.)
     event_type = request.get("type")
 
-    if event_type == "customer.subscription.created":
-        customer_id = request["data"]["object"]["customer"]
-        end_timestamp = request["data"]["object"]["current_period_end"]
+    if event_type == "customer.subscription.created" or event_type == "customer.subscription.updated":
+        obj = request["data"]["object"]
+        customer_id = obj["customer"]
+        end_timestamp = obj["current_period_end"]
         end_date = datetime.fromtimestamp(end_timestamp)
+        plan_name = obj.get("metadata", {}).get("plan", "monthly")
 
         db = SessionLocal()
         user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
         if user:
             user.is_subscribed = True
             user.subscription_end = end_date
+            user.plan = plan_name
             db.commit()
         db.close()
 
@@ -201,10 +217,21 @@ async def stripe_webhook(request: dict):
         user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
         if user:
             user.is_subscribed = False
+            user.plan = None
             db.commit()
         db.close()
 
     return {"status": "ok"}
+
+@app.get("/plans")
+def get_plans():
+    return {
+        "plans": [
+            {"id": "monthly",   "name": "Mensal",    "price": "9.99€",  "period": "mês",       "price_id": STRIPE_PRICES["monthly"]},
+            {"id": "quarterly", "name": "Trimestral","price": "19.99€", "period": "3 meses",   "price_id": STRIPE_PRICES["quarterly"]},
+            {"id": "yearly",    "name": "Anual",     "price": "49.99€", "period": "ano",       "price_id": STRIPE_PRICES["yearly"]},
+        ]
+    }
 
 @app.get("/health")
 def health():
