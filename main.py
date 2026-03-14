@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime
@@ -100,34 +100,40 @@ def get_current_user(authorization: str = Header(...), db: Session = Depends(get
 def generate_code() -> str:
     return ''.join(random.choices(string.digits, k=6))
 
+import asyncio
+import httpx
+
 async def send_verification_email(email: str, code: str):
-    if not GMAIL_USER or not GMAIL_PASSWORD:
-        print("EMAIL ERROR: Gmail credentials not configured")
+    if not RESEND_API_KEY:
+        print("EMAIL ERROR: Resend API key not configured")
         return
     try:
         print(f"Sending email to {email} with code {code}")
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = 'Confirma o teu email — Stem Separator'
-        msg['From'] = f'Stem Separator <{GMAIL_USER}>'
-        msg['To'] = email
-
-        html = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 400px; margin: 0 auto;">
-            <h2 style="color: #6C63FF;">Stem Separator</h2>
-            <p>Olá! O teu código de verificação é:</p>
-            <div style="background: #1A1A2E; color: #6C63FF; font-size: 36px; font-weight: bold;
-                        text-align: center; padding: 20px; border-radius: 12px; letter-spacing: 8px;">
-                {code}
-            </div>
-            <p style="color: #666;">Este código expira em 15 minutos.</p>
-        </div>
-        """
-        msg.attach(MIMEText(html, 'html'))
-
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(GMAIL_USER, GMAIL_PASSWORD)
-            server.sendmail(GMAIL_USER, email, msg.as_string())
-            print(f"Email sent successfully to {email}")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "from": "Stem Separator <onboarding@resend.dev>",
+                    "to": [email],
+                    "subject": "Confirma o teu email — Stem Separator",
+                    "html": f"""
+                    <div style="font-family: Arial, sans-serif; max-width: 400px; margin: 0 auto;">
+                        <h2 style="color: #6C63FF;">Stem Separator</h2>
+                        <p>Olá! O teu código de verificação é:</p>
+                        <div style="background: #1A1A2E; color: #6C63FF; font-size: 36px; font-weight: bold;
+                                    text-align: center; padding: 20px; border-radius: 12px; letter-spacing: 8px;">
+                            {code}
+                        </div>
+                        <p style="color: #666;">Este código expira em 15 minutos.</p>
+                    </div>
+                    """
+                }
+            )
+            print(f"Resend response: {response.status_code} - {response.text}")
     except Exception as e:
         print(f"EMAIL ERROR: {e}")
 
@@ -159,7 +165,7 @@ class CheckoutRequest(BaseModel):
 # ─────────────────────────────────────────
 
 @app.post("/register")
-async def register(req: RegisterRequest, db: Session = Depends(get_db)):
+async def register(req: RegisterRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     if len(req.password) > 72:
         raise HTTPException(status_code=400, detail="Password demasiado longa (máximo 72 caracteres)")
 
@@ -176,7 +182,8 @@ async def register(req: RegisterRequest, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
 
-    await send_verification_email(req.email, code)
+    # Envia email em background para não bloquear
+    background_tasks.add_task(send_verification_email, req.email, code)
 
     return {"message": "Conta criada! Verifica o teu email para ativar a conta.", "email": req.email}
 
@@ -197,7 +204,7 @@ def verify_email(req: VerifyRequest, db: Session = Depends(get_db)):
     return {"token": token, "email": req.email, "message": "Email verificado com sucesso!"}
 
 @app.post("/resend-code")
-async def resend_code(email: str, db: Session = Depends(get_db)):
+async def resend_code(email: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="Utilizador não encontrado")
@@ -206,7 +213,7 @@ async def resend_code(email: str, db: Session = Depends(get_db)):
     user.verification_code = code
     db.commit()
 
-    await send_verification_email(email, code)
+    background_tasks.add_task(send_verification_email, email, code)
     return {"message": "Código reenviado!"}
 
 @app.post("/login")
