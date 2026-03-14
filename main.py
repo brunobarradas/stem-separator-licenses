@@ -10,7 +10,9 @@ from datetime import datetime, timedelta
 import stripe
 import os
 import uuid
-import httpx
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import random
 import string
 
@@ -20,6 +22,8 @@ import string
 SECRET_KEY = os.getenv("SECRET_KEY", "changeme-secret-key-123")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+GMAIL_USER = os.getenv("GMAIL_USER", "")
+GMAIL_PASSWORD = os.getenv("GMAIL_PASSWORD", "")
 TRIAL_LIMIT = 3
 APP_URL = os.getenv("APP_URL", "https://stem-separator-licenses-production.up.railway.app")
 
@@ -97,29 +101,32 @@ def generate_code() -> str:
     return ''.join(random.choices(string.digits, k=6))
 
 async def send_verification_email(email: str, code: str):
-    if not RESEND_API_KEY:
+    if not GMAIL_USER or not GMAIL_PASSWORD:
         return
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
-            json={
-                "from": "Stem Separator <onboarding@resend.dev>",
-                "to": [email],
-                "subject": "Confirma o teu email — Stem Separator",
-                "html": f"""
-                <div style="font-family: Arial, sans-serif; max-width: 400px; margin: 0 auto;">
-                    <h2 style="color: #6C63FF;">Stem Separator</h2>
-                    <p>Olá! O teu código de verificação é:</p>
-                    <div style="background: #1A1A2E; color: #6C63FF; font-size: 36px; font-weight: bold;
-                                text-align: center; padding: 20px; border-radius: 12px; letter-spacing: 8px;">
-                        {code}
-                    </div>
-                    <p style="color: #666;">Este código expira em 15 minutos.</p>
-                </div>
-                """
-            }
-        )
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = 'Confirma o teu email — Stem Separator'
+        msg['From'] = f'Stem Separator <{GMAIL_USER}>'
+        msg['To'] = email
+
+        html = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 400px; margin: 0 auto;">
+            <h2 style="color: #6C63FF;">Stem Separator</h2>
+            <p>Olá! O teu código de verificação é:</p>
+            <div style="background: #1A1A2E; color: #6C63FF; font-size: 36px; font-weight: bold;
+                        text-align: center; padding: 20px; border-radius: 12px; letter-spacing: 8px;">
+                {code}
+            </div>
+            <p style="color: #666;">Este código expira em 15 minutos.</p>
+        </div>
+        """
+        msg.attach(MIMEText(html, 'html'))
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(GMAIL_USER, GMAIL_PASSWORD)
+            server.sendmail(GMAIL_USER, email, msg.as_string())
+    except Exception as e:
+        print(f"Email error: {e}")
 
 # ─────────────────────────────────────────
 # MODELOS
