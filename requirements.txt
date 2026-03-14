@@ -1,8 +1,8 @@
 fastapi
 uvicorn
-python-jose
-passlib[bcrypt]
+python-jose[cryptography]
+passlib[argon2]
+argon2-cffi
 stripe
 sqlalchemy
 python-multipart
-bcrypt
