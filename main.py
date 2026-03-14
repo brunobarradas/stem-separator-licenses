@@ -354,4 +354,9 @@ def get_plans():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "gmail_user_set": bool(GMAIL_USER),
+        "gmail_pass_set": bool(GMAIL_PASSWORD),
+        "gmail_user_value": GMAIL_USER[:5] if GMAIL_USER else "empty"
+    }
