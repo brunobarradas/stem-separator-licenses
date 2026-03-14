@@ -6,3 +6,4 @@ argon2-cffi
 stripe
 sqlalchemy
 python-multipart
+httpx
