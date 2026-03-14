@@ -215,6 +215,18 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 def register_mac(req: MacRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
 
+    # Verifica se o MAC já está registado noutro utilizador
+    existing = db.query(User).filter(
+        User.mac_address == req.mac_address,
+        User.email != user.email
+    ).first()
+
+    if existing:
+        # PC já foi usado antes — esgota o trial imediatamente
+        if not db_user.is_subscribed:
+            db_user.songs_used = TRIAL_LIMIT
+
+    # Verifica se este utilizador já tem outro MAC registado
     if db_user.mac_address and db_user.mac_address != req.mac_address:
         raise HTTPException(
             status_code=403,
