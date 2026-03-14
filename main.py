@@ -102,8 +102,10 @@ def generate_code() -> str:
 
 async def send_verification_email(email: str, code: str):
     if not GMAIL_USER or not GMAIL_PASSWORD:
+        print("EMAIL ERROR: Gmail credentials not configured")
         return
     try:
+        print(f"Sending email to {email} with code {code}")
         msg = MIMEMultipart('alternative')
         msg['Subject'] = 'Confirma o teu email — Stem Separator'
         msg['From'] = f'Stem Separator <{GMAIL_USER}>'
@@ -125,8 +127,9 @@ async def send_verification_email(email: str, code: str):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(GMAIL_USER, GMAIL_PASSWORD)
             server.sendmail(GMAIL_USER, email, msg.as_string())
+            print(f"Email sent successfully to {email}")
     except Exception as e:
-        print(f"Email error: {e}")
+        print(f"EMAIL ERROR: {e}")
 
 # ─────────────────────────────────────────
 # MODELOS
